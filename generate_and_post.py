@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""AI Clone Video System — main orchestration script.
-
-Generates a voiceover, creates an AI avatar video, post-processes it,
-and publishes to Instagram Reels and TikTok.
-
-Usage:
-    python generate_and_post.py --script "Your script here" --setting "Scene description"
-"""
+"""AI Clone Video System — generates a Grok AI video and posts to Instagram + TikTok."""
 
 import os
 import sys
@@ -21,198 +14,117 @@ from rich.table import Table
 from modules.ayrshare_client import AyrshareClient
 from modules.elevenlabs_client import ElevenLabsClient
 from modules.grok_video_client import GrokVideoClient
-from modules.heygen_client import HeyGenClient
-from modules.taisly_client import TaislyClient
 from modules.video_processor import VideoProcessor
 
 console = Console()
 
+REQUIRED_ENV_VARS = [
+    "ELEVENLABS_API_KEY",
+    "ELEVENLABS_VOICE_ID",
+    "GROK_API_KEY",
+    "GROK_BASE_IMAGE_PATH",
+    "AYRSHARE_API_KEY",
+    "TARGET_PLATFORMS",
+]
 
-def validate_env_vars(required_vars: list[str]) -> None:
+
+def validate_env() -> None:
     """Check that all required environment variables are set."""
-    missing = [var for var in required_vars if not os.environ.get(var)]
+    missing = [v for v in REQUIRED_ENV_VARS if not os.getenv(v)]
     if missing:
-        console.print(
-            f"[bold red]✗ Missing required environment variables:[/bold red] "
-            f"{', '.join(missing)}"
-        )
-        console.print("  Please configure them in your .env file.")
+        console.print("[bold red]Missing environment variables:[/bold red]")
+        for v in missing:
+            console.print(f"  \u2022 {v}")
+        console.print("[dim]Copy .env.template \u2192 .env and fill in your keys.[/dim]")
         sys.exit(1)
 
 
 @click.command()
 @click.option("--script", required=True, help="The spoken script for the AI clone.")
-@click.option(
-    "--setting",
-    required=True,
-    help='Scene description, e.g. "futuristic lab with holograms".',
-)
-@click.option(
-    "--caption",
-    default=None,
-    help="Social media caption. Auto-generated from script if omitted.",
-)
-@click.option(
-    "--hashtags",
-    default="#AI,#AIVideo,#ContentCreator",
-    help="Hashtags as comma-separated string.",
-)
-@click.option(
-    "--skip-post",
-    is_flag=True,
-    help="Generate video only, skip social posting.",
-)
-def main(
-    script: str,
-    setting: str,
-    caption: str | None,
-    hashtags: str,
-    skip_post: bool,
-) -> None:
+@click.option("--setting", required=True, help='Scene description, e.g. "futuristic lab with holograms".')
+@click.option("--caption", default=None, help="Social media caption. Auto-generated from script if omitted.")
+@click.option("--hashtags", default="#AI,#AIVideo,#ContentCreator", help="Hashtags as comma-separated string.")
+@click.option("--skip-post", is_flag=True, help="Generate video only, skip social posting.")
+def main(script: str, setting: str, caption: str | None, hashtags: str, skip_post: bool) -> None:
     """AI Clone Video System — generate and post AI avatar videos."""
-
-    # Load environment variables from .env
     load_dotenv()
+    validate_env()
+    Path("output").mkdir(exist_ok=True)
 
-    # Determine providers from env
-    video_provider = os.environ.get("VIDEO_PROVIDER", "heygen").lower()
-    social_provider = os.environ.get("SOCIAL_PROVIDER", "ayrshare").lower()
-    target_platforms = [
-        p.strip() for p in os.environ.get("TARGET_PLATFORMS", "instagram,tiktok").split(",")
-    ]
+    platforms = [p.strip() for p in os.environ["TARGET_PLATFORMS"].split(",")]
+    hashtag_list = [h.strip() for h in hashtags.split(",")]
+    final_caption = caption or script.split(".")[0].strip()
 
-    # Validate required env vars based on selected providers
-    required = ["ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID"]
+    console.print(Panel.fit(
+        "[bold green]AI Clone Video System[/bold green]\n"
+        f"[dim]Video :[/dim] [cyan]Grok / xAI[/cyan]   "
+        f"[dim]Social:[/dim] [cyan]Ayrshare[/cyan]   "
+        f"[dim]Platforms:[/dim] [cyan]{', '.join(platforms)}[/cyan]",
+        border_style="green",
+    ))
 
-    if video_provider == "heygen":
-        required += ["HEYGEN_API_KEY", "HEYGEN_AVATAR_ID"]
-    elif video_provider == "grok":
-        required += ["GROK_API_KEY", "GROK_BASE_IMAGE_PATH"]
-    else:
-        console.print(f"[bold red]✗ VIDEO_PROVIDER must be 'heygen' or 'grok', got '{video_provider}'[/bold red]")
-        sys.exit(1)
+    audio_path = video_raw_path = video_final_path = ""
+    post_response: dict = {}
 
-    if not skip_post:
-        if social_provider == "ayrshare":
-            required += ["AYRSHARE_API_KEY"]
-        elif social_provider == "taisly":
-            required += ["TAISLY_API_KEY", "TAISLY_USER_ID"]
-        else:
-            console.print(f"[bold red]✗ SOCIAL_PROVIDER must be 'ayrshare' or 'taisly', got '{social_provider}'[/bold red]")
-            sys.exit(1)
-
-    validate_env_vars(required)
-
-    # Ensure output directory exists
-    Path("output").mkdir(parents=True, exist_ok=True)
-
-    # Display startup panel
-    console.print(
-        Panel(
-            f"[bold green]AI Clone Video System Starting[/bold green]\n"
-            f"Video Provider : {video_provider}\n"
-            f"Social Provider: {social_provider}\n"
-            f"Platforms      : {', '.join(target_platforms)}",
-            expand=False,
-        )
-    )
-
-    audio_path = None
-    video_raw_path = None
-    video_final_path = None
-    post_result = None
-
-    # ── Step A: Generate audio via ElevenLabs ──
+    # Step 1 — Audio
     try:
-        console.print("\n[1/4] Generating audio via ElevenLabs...", end="  ")
-        el_client = ElevenLabsClient(
-            api_key=os.environ["ELEVENLABS_API_KEY"],
-            voice_id=os.environ["ELEVENLABS_VOICE_ID"],
-        )
-        audio_path = el_client.generate_audio(script)
-        console.print(f"[green]✓[/green] {audio_path}")
+        console.print("\n[bold][1/4][/bold] Generating voiceover via ElevenLabs...")
+        audio_path = ElevenLabsClient(
+            os.environ["ELEVENLABS_API_KEY"],
+            os.environ["ELEVENLABS_VOICE_ID"],
+        ).generate_audio(script)
+        console.print(f"[green]     \u2713[/green] {audio_path}")
     except Exception as e:
-        console.print(f"[bold red]✗ Error:[/bold red] {e}")
+        console.print(f"[bold red]     \u2717 Audio failed:[/bold red] {e}")
         sys.exit(1)
 
-    # ── Step B: Generate video ──
+    # Step 2 — Video
     try:
-        console.print(f"[2/4] Generating video via {video_provider.title()}...", end="  ")
-        if video_provider == "heygen":
-            video_client = HeyGenClient(
-                api_key=os.environ["HEYGEN_API_KEY"],
-                avatar_id=os.environ["HEYGEN_AVATAR_ID"],
-            )
-        else:
-            video_client = GrokVideoClient(
-                api_key=os.environ["GROK_API_KEY"],
-                base_image_path=os.environ["GROK_BASE_IMAGE_PATH"],
-            )
-        video_raw_path = video_client.create_video(audio_path, script, setting)
-        console.print(f"[green]✓[/green] {video_raw_path}")
+        console.print("\n[bold][2/4][/bold] Generating video via Grok Imagine...")
+        video_raw_path = GrokVideoClient(
+            os.environ["GROK_API_KEY"],
+            os.environ["GROK_BASE_IMAGE_PATH"],
+        ).create_video(audio_path, script, setting)
+        console.print(f"[green]     \u2713[/green] {video_raw_path}")
     except Exception as e:
-        console.print(f"[bold red]✗ Error:[/bold red] {e}")
+        console.print(f"[bold red]     \u2717 Video failed:[/bold red] {e}")
         sys.exit(1)
 
-    # ── Step C: Post-process video ──
+    # Step 3 — Process
     try:
-        console.print("[3/4] Processing video (9:16, trim)...", end="  ")
-        processor = VideoProcessor()
-        video_final_path = processor.process(video_raw_path, audio_path)
-        console.print(f"[green]✓[/green] {video_final_path}")
+        console.print("\n[bold][3/4][/bold] Processing video (9:16, trim)...")
+        video_final_path = VideoProcessor().process(video_raw_path)
+        console.print(f"[green]     \u2713[/green] {video_final_path}")
     except Exception as e:
-        console.print(f"[bold red]✗ Error:[/bold red] {e}")
+        console.print(f"[bold red]     \u2717 Processing failed:[/bold red] {e}")
         sys.exit(1)
 
-    # ── Step D: Post to social media ──
+    # Step 4 — Post
     if skip_post:
-        console.print("[4/4] Posting skipped (--skip-post flag).")
+        console.print("\n[dim][4/4] Skipping post (--skip-post).[/dim]")
     else:
         try:
-            console.print(
-                f"[4/4] Posting to {' + '.join(p.title() for p in target_platforms)}...",
-                end="  ",
+            console.print(f"\n[bold][4/4][/bold] Posting to {', '.join(platforms)}...")
+            post_response = AyrshareClient(os.environ["AYRSHARE_API_KEY"]).post_video(
+                video_final_path, final_caption, hashtag_list, platforms,
             )
-
-            # Parse hashtags from comma-separated CLI arg
-            hashtag_list = [h.strip() for h in hashtags.split(",") if h.strip()]
-
-            # Auto-generate caption from first sentence if not provided
-            if caption is None:
-                first_sentence = script.split(".")[0].strip()
-                caption = first_sentence + "." if first_sentence else script[:100]
-
-            if social_provider == "ayrshare":
-                social_client = AyrshareClient(api_key=os.environ["AYRSHARE_API_KEY"])
-            else:
-                social_client = TaislyClient(
-                    api_key=os.environ["TAISLY_API_KEY"],
-                    user_id=os.environ["TAISLY_USER_ID"],
-                )
-
-            post_result = social_client.post_video(
-                video_path=video_final_path,
-                caption=caption,
-                hashtags=hashtag_list,
-                platforms=target_platforms,
-            )
-            console.print(f"[green]✓[/green] Post IDs: {post_result}")
+            console.print("[green]     \u2713 Posted![/green]")
         except Exception as e:
-            console.print(f"[bold red]✗ Error:[/bold red] {e}")
+            console.print(f"[bold red]     \u2717 Posting failed:[/bold red] {e}")
             sys.exit(1)
 
-    # ── Summary ──
-    console.print()
-    table = Table(title="Summary")
-    table.add_column("Output", style="cyan")
-    table.add_column("Path / Value", style="green")
-    table.add_row("Audio", audio_path or "—")
-    table.add_row("Raw Video", video_raw_path or "—")
-    table.add_row("Final Video", video_final_path or "—")
-    table.add_row("Post Result", str(post_result) if post_result else "Skipped")
-    console.print(table)
+    # Summary
+    t = Table(title="Summary", border_style="green", show_header=False)
+    t.add_column(style="dim")
+    t.add_column(style="cyan")
+    t.add_row("Audio", audio_path)
+    t.add_row("Raw Video", video_raw_path)
+    t.add_row("Final Video", video_final_path)
+    if post_response:
+        t.add_row("Post ID", str(post_response.get("id", "see response")))
+    console.print(t)
 
-    console.print("\n[bold green]✓ Done![/bold green] Video posted successfully.")
+    console.print("\n[bold green]\u2713 Done![/bold green]")
 
 
 if __name__ == "__main__":

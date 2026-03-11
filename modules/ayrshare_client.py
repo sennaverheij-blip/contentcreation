@@ -13,14 +13,16 @@ class AyrshareClient:
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
 
-    def _upload_media(self, video_path: str) -> str:
+    def upload_media(self, file_path: str) -> str:
         """Upload a video file to Ayrshare and return the hosted media URL.
 
+        POST file to /media/upload as multipart/form-data.
+
         Args:
-            video_path: Local path to the video file.
+            file_path: Local path to the video file.
 
         Returns:
-            The hosted URL of the uploaded media.
+            The hosted URL string of the uploaded media.
 
         Raises:
             RuntimeError: If the upload fails.
@@ -28,8 +30,8 @@ class AyrshareClient:
         url = f"{self.BASE_URL}/media/upload"
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
-        with open(video_path, "rb") as f:
-            files = {"file": (Path(video_path).name, f, "video/mp4")}
+        with open(file_path, "rb") as f:
+            files = {"file": (Path(file_path).name, f, "video/mp4")}
             resp = requests.post(url, files=files, headers=headers, timeout=120)
 
         if resp.status_code != 200:
@@ -53,6 +55,10 @@ class AyrshareClient:
     ) -> dict:
         """Upload and post a video to the specified social platforms.
 
+        1. Call upload_media() to get hosted URL
+        2. POST to /post with payload
+        3. Return response JSON
+
         Args:
             video_path: Local path to the final video file.
             caption: The post caption text.
@@ -66,7 +72,7 @@ class AyrshareClient:
             RuntimeError: If posting fails.
         """
         # Step 1: Upload the video to get a hosted URL
-        media_url = self._upload_media(video_path)
+        media_url = self.upload_media(video_path)
 
         # Step 2: Create the post
         url = f"{self.BASE_URL}/post"
@@ -77,16 +83,22 @@ class AyrshareClient:
 
         # Combine caption and hashtags into the post text
         hashtag_str = " ".join(hashtags)
-        post_text = f"{caption} {hashtag_str}".strip()
+        post_text = f"{caption}\n\n{hashtag_str}"
 
         payload = {
             "post": post_text,
             "platforms": platforms,
             "mediaUrls": [media_url],
-            # Instagram-specific: post as a Reel
-            "instagramOptions": {"reels": True},
-            # TikTok-specific: set visibility to public
-            "tiktokOptions": {"privacy": "PUBLIC_TO_EVERYONE"},
+            "instagramOptions": {
+                "reels": True,
+                # shareReelsFeed: also show the Reel on the main profile grid
+                "shareReelsFeed": True,
+            },
+            "tiktokOptions": {
+                "privacy": "PUBLIC_TO_EVERYONE",
+                "disableDuet": False,
+                "disableComment": False,
+            },
         }
 
         resp = requests.post(url, json=payload, headers=headers, timeout=60)

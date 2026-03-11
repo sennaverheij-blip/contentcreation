@@ -1,5 +1,6 @@
 .env
 output/
+assets/
 __pycache__/
 *.pyc
 *.mp4

@@ -1,6 +1,5 @@
 """ElevenLabs Professional Voice Cloning client."""
 
-import os
 from pathlib import Path
 
 import requests
@@ -17,6 +16,11 @@ class ElevenLabsClient:
 
     def generate_audio(self, script: str, output_path: str = "output/audio.mp3") -> str:
         """Generate speech audio from a script using the cloned voice.
+
+        POST to /text-to-speech/{voice_id}.
+        Stream binary response to output_path.
+        Return output_path on success.
+        Raise RuntimeError with response body on non-200.
 
         Args:
             script: The text to convert to speech.
@@ -39,8 +43,9 @@ class ElevenLabsClient:
             "text": script,
             "model_id": "eleven_multilingual_v2",
             "voice_settings": {
+                # stability: lower = more expressive, higher = more consistent
                 "stability": 0.5,
-                # similarity_boost controls how closely the output matches the cloned voice
+                # similarity_boost: how closely output matches the cloned voice timbre
                 "similarity_boost": 0.85,
             },
         }
@@ -52,11 +57,10 @@ class ElevenLabsClient:
                 f"ElevenLabs API error (HTTP {response.status_code}): {response.text}"
             )
 
-        # Ensure the output directory exists
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=4096):
+            for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
 

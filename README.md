@@ -1,117 +1,92 @@
 # AI Clone Video System
 
-Fully automated pipeline that generates AI clone videos and publishes them to social media.
+Fully automated pipeline: script → ElevenLabs voice → Grok Imagine frames → stitched MP4 → Ayrshare → Instagram Reels + TikTok.
 
 ## Overview
 
 This system:
 1. Accepts a user-provided script and scene setting
 2. Generates a realistic voiceover using ElevenLabs Professional Voice Cloning
-3. Produces an AI video clone (via HeyGen or Grok/xAI)
-4. Post-processes the video to meet platform specs (9:16, correct duration)
-5. Publishes the video to Instagram Reels and TikTok (via Ayrshare or Taisly)
+3. Generates 10 AI image frames via the Grok Imagine API (xAI) with motion-variant prompts
+4. Stitches frames into a video at 8 fps with audio overlaid
+5. Post-processes the video to 9:16 (1080x1920), trims to 89s max
+6. Publishes the video to Instagram Reels and TikTok via Ayrshare
 
 ## Prerequisites
 
 - **Python 3.10+**
-- **ffmpeg** installed and available on PATH
-- API accounts for:
+- **ffmpeg** installed system-wide and available on PATH
+- API accounts:
   - [ElevenLabs](https://elevenlabs.io/) — Professional Voice Cloning
-  - [HeyGen](https://www.heygen.com/) or [xAI](https://x.ai/) — Video generation
-  - [Ayrshare](https://www.ayrshare.com/) or [Taisly](https://taisly.com/) — Social media posting
+  - [xAI / Grok](https://x.ai/) — Image generation
+  - [Ayrshare](https://www.ayrshare.com/) — Social media posting
 
 ## Installation
 
 ```bash
-git clone <repo>
-cd ai-clone-video
+git clone <repo> && cd ai-clone-video
 pip install -r requirements.txt
-cp .env.template .env
-# Edit .env with your API keys
+cp .env.template .env   # fill in keys
+mkdir assets
+# add your photo as assets/base_image.jpg
 ```
 
-## Setup Per Service
+## API Keys Reference
 
-### ElevenLabs
-- Sign up at [elevenlabs.io](https://elevenlabs.io/)
-- Create a Professional Voice Clone from your audio samples
-- Copy your API key from Profile > API Key
-- Copy the Voice ID from the voice settings page
-
-### HeyGen (Video Provider)
-- Sign up at [heygen.com](https://www.heygen.com/)
-- Create an avatar or use an existing one
-- Copy your API key from Settings > API
-- Copy your Avatar ID from the avatar details page
-
-### Grok / xAI (Alternative Video Provider)
-- Sign up at [x.ai](https://x.ai/)
-- Get your API key from the developer console
-- Provide a base image of yourself at the path specified in `.env`
-
-### Ayrshare (Social Posting)
-- Sign up at [ayrshare.com](https://www.ayrshare.com/)
-- Connect your Instagram and TikTok accounts
-- Copy your API key from the dashboard
-
-### Taisly (Alternative Social Posting)
-- Sign up at [taisly.com](https://taisly.com/)
-- Connect your social accounts
-- Copy your API key and User ID from settings
+| Service | Where to get it |
+|---------|----------------|
+| ElevenLabs API key | elevenlabs.io → Profile → API Key |
+| ElevenLabs Voice ID | Voice Library → click your cloned voice → ID in URL |
+| xAI / Grok key | console.x.ai → API Keys |
+| Ayrshare key | app.ayrshare.com → Settings → API Key |
 
 ## Usage
 
 ```bash
+# Full run
 python generate_and_post.py \
   --script "Welcome to the future of AI video." \
   --setting "Futuristic laboratory with holographic displays" \
-  --caption "Check out my AI clone!" \
-  --hashtags "#AI,#AIClone,#TechContent"
-```
+  --caption "My AI clone is here" \
+  --hashtags "#AI,#AIClone,#TechTok"
 
-Generate only, no posting:
-
-```bash
+# Video only, no posting
 python generate_and_post.py \
-  --script "Welcome to the future of AI video." \
-  --setting "Futuristic laboratory with holographic displays" \
-  --skip-post
+  --script "Your script." --setting "Your scene." --skip-post
 ```
-
-## Switching Providers
-
-Edit your `.env` file to change providers:
-
-- **Video provider**: Set `VIDEO_PROVIDER` to `heygen` or `grok`
-- **Social provider**: Set `SOCIAL_PROVIDER` to `ayrshare` or `taisly`
-- **Target platforms**: Set `TARGET_PLATFORMS` to a comma-separated list (e.g. `instagram,tiktok`)
 
 ## Output Files
 
 | File | Description |
 |------|-------------|
 | `output/audio.mp3` | Generated voiceover audio from ElevenLabs |
-| `output/video_raw.mp4` | Raw AI-generated video from HeyGen or Grok |
+| `output/frame_*.png` | Temporary Grok-generated image frames (cleaned up after stitching) |
+| `output/video_raw.mp4` | Stitched video from image frames + audio |
 | `output/video_final.mp4` | Post-processed video (9:16, trimmed, correct codecs) |
 
-## Error Handling
+## How Grok Video Works
+
+The xAI Grok Imagine API generates images, not video directly. This system:
+1. Builds a base prompt from the setting + script excerpt with cinematic quality keywords
+2. Generates 10 image frames, each with a different motion modifier (e.g. "subtle zoom in", "slight pan left", "warm golden lighting shift")
+3. Stitches frames into a video using moviepy's `ImageSequenceClip` at 8 fps
+4. Overlays the ElevenLabs audio track, matching video duration to audio duration
+5. Exports at 30 fps with libx264 codec
+
+## Common Errors
 
 | Error | Meaning |
 |-------|---------|
 | Missing environment variables | Required API keys not set in `.env` |
-| ElevenLabs API error (HTTP 4xx) | Invalid API key, voice ID, or request |
-| HeyGen video generation timed out | Video took longer than 10 minutes to generate |
-| HeyGen video generation failed | Avatar or audio issue — check HeyGen dashboard |
-| Ayrshare/Taisly post failed | Social account not connected or API key invalid |
+| ElevenLabs API error (HTTP 401) | Invalid API key or voice ID |
+| xAI image generation failed (HTTP 401) | Invalid Grok API key |
+| xAI image generation failed (HTTP 429) | Rate limited — wait and retry |
+| ffmpeg not found | Install ffmpeg: `brew install ffmpeg` or `apt install ffmpeg` |
+| Base image missing | Add your photo to the path in `GROK_BASE_IMAGE_PATH` |
+| Ayrshare post failed | Social account not connected or API key invalid |
 
-## Extending the System
+## Extending
 
-To add a new video provider:
-1. Create `modules/your_provider_client.py` with a `create_video(audio_path, script, setting) -> str` method
-2. Add the provider option to `generate_and_post.py` in the Step B section
-3. Add required env vars to `.env.template` and the validation list
-
-To add a new social posting provider:
-1. Create `modules/your_social_client.py` with a `post_video(video_path, caption, hashtags, platforms) -> dict` method
-2. Add the provider option to `generate_and_post.py` in the Step D section
-3. Add required env vars to `.env.template` and the validation list
+- **Add HeyGen support**: Create `modules/heygen_client.py` with a `create_video(audio_path, script, setting) -> str` method, add provider switching in `generate_and_post.py`
+- **Add scheduling**: Use Ayrshare's `scheduleDate` field in the post payload
+- **Batch from file**: Read scripts from a `scripts.txt` and loop through `main()` for each line
